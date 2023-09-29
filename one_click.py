@@ -2,7 +2,6 @@ import argparse
 import glob
 import os
 import platform
-import re
 import site
 import subprocess
 import sys
@@ -22,8 +21,6 @@ if os.path.exists(cmd_flags_path):
         CMD_FLAGS = ' '.join(line.strip() for line in f if line.strip() and not line.strip().startswith('#'))
 else:
     CMD_FLAGS = ''
-
-flags = f"{' '.join([flag for flag in sys.argv[1:] if flag != '--update'])} {CMD_FLAGS}"
 
 
 def is_linux():
@@ -56,7 +53,6 @@ def cpu_has_avx2():
 
 
 def torch_version():
-    site_packages_path = None
     for sitedir in site.getsitepackages():
         if "site-packages" in sitedir and conda_env_path in sitedir:
             site_packages_path = sitedir
@@ -71,7 +67,6 @@ def torch_version():
 
 
 def is_installed():
-    site_packages_path = None
     for sitedir in site.getsitepackages():
         if "site-packages" in sitedir and conda_env_path in sitedir:
             site_packages_path = sitedir
@@ -88,12 +83,12 @@ def check_env():
     conda_exist = run_cmd("conda", environment=True, capture_output=True).returncode == 0
     if not conda_exist:
         print("Conda is not installed. Exiting...")
-        sys.exit(1)
+        sys.exit()
 
     # Ensure this is a new environment and not the base environment
     if os.environ["CONDA_DEFAULT_ENV"] == "base":
         print("Create an environment for this project and activate it. Exiting...")
-        sys.exit(1)
+        sys.exit()
 
 
 def clear_cache():
@@ -127,8 +122,8 @@ def run_cmd(cmd, assert_success=False, environment=False, capture_output=False, 
 
     # Assert the command ran successfully
     if assert_success and result.returncode != 0:
-        print("Command '" + cmd + "' failed with exit status code '" + str(result.returncode) + "'.\n\nExiting now.\nTry running the start/update script again.")
-        sys.exit(1)
+        print("Command '" + cmd + "' failed with exit status code '" + str(result.returncode) + "'. Exiting...")
+        sys.exit()
 
     return result
 
@@ -139,7 +134,6 @@ def install_webui():
         choice = os.environ["GPU_CHOICE"].upper()
         print_big_message(f"Selected GPU choice \"{choice}\" based on the GPU_CHOICE environment variable.")
     else:
-        print()
         print("What is your GPU?")
         print()
         print("A) NVIDIA")
@@ -168,7 +162,7 @@ def install_webui():
             install_pytorch = "python -m pip install torch==2.0.1+rocm5.4.2 torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm5.4.2"
         else:
             print("AMD GPUs are only supported on Linux. Exiting...")
-            sys.exit(1)
+            sys.exit()
     elif is_linux() and (choice == "C" or choice == "N"):
         install_pytorch = "python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu"
     elif choice == "D":
@@ -191,22 +185,20 @@ def update_requirements(initial_installation=False):
 
     # Extensions requirements are installed only during the initial install by default.
     # That can be changed with the INSTALL_EXTENSIONS environment variable.
-    install = initial_installation
-    if "INSTALL_EXTENSIONS" in os.environ:
-        install = os.environ["INSTALL_EXTENSIONS"].lower() in ("yes", "y", "true", "1", "t", "on")
+    install_extensions = os.environ.get("INSTALL_EXTENSIONS", "false").lower() in ("yes", "y", "true", "1", "t", "on")
+    if initial_installation or install_extensions:
+        if not install_extensions:
+            print_big_message("Will not install extensions due to INSTALL_EXTENSIONS environment variable.")
+        else:
+            print("Installing extensions requirements.")
+            extensions = next(os.walk("extensions"))[1]
+            for extension in extensions:
+                if extension in ['superbooga']:  # No wheels available for requirements
+                    continue
 
-    if install:
-        print_big_message("Installing extensions requirements.")
-        extensions = next(os.walk("extensions"))[1]
-        for extension in extensions:
-            if extension in ['superbooga', 'superboogav2']:  # No wheels available for requirements
-                continue
-
-            extension_req_path = os.path.join("extensions", extension, "requirements.txt")
-            if os.path.exists(extension_req_path):
-                run_cmd("python -m pip install -r " + extension_req_path + " --upgrade", assert_success=True, environment=True)
-    elif initial_installation:
-        print_big_message("Will not install extensions due to INSTALL_EXTENSIONS environment variable.")
+                extension_req_path = os.path.join("extensions", extension, "requirements.txt")
+                if os.path.exists(extension_req_path):
+                    run_cmd("python -m pip install -r " + extension_req_path + " --upgrade", assert_success=True, environment=True)
 
     # Detect the PyTorch version
     torver = torch_version()
@@ -236,7 +228,7 @@ def update_requirements(initial_installation=False):
         else:
             requirements_file = "requirements_noavx2.txt"
 
-    print_big_message(f"Installing webui requirements from file: {requirements_file}")
+    print(f"Using the following requirements file: {requirements_file}")
 
     textgen_requirements = open(requirements_file).read().splitlines()
 
@@ -293,7 +285,8 @@ def download_model():
 
 
 def launch_webui():
-    run_cmd(f"python server.py {flags}", environment=True)
+    flags = [flag for flag in sys.argv[1:] if flag != '--update']
+    run_cmd(f"python server.py {' '.join(flags)} {CMD_FLAGS}", environment=True)
 
 
 if __name__ == "__main__":
@@ -317,14 +310,7 @@ if __name__ == "__main__":
             sys.exit()
 
         # Check if a model has been downloaded yet
-        if '--model-dir' in flags:
-            # Splits on ' ' or '=' while maintaining spaces within quotes
-            flags_list = re.split(' +(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)|=', flags)
-            model_dir = [flags_list[(flags_list.index(flag)+1)] for flag in flags_list if flag == '--model-dir'][0].strip('"\'')
-        else:
-            model_dir = 'models'
-
-        if len([item for item in glob.glob(f'{model_dir}/*') if not item.endswith(('.txt', '.yaml'))]) == 0:
+        if len([item for item in glob.glob('models/*') if not item.endswith(('.txt', '.yaml'))]) == 0:
             print_big_message("WARNING: You haven't downloaded any model yet.\nOnce the web UI launches, head over to the \"Model\" tab and download one.")
 
         # Workaround for llama-cpp-python loading paths in CUDA env vars even if they do not exist
